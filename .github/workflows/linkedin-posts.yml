@@ -1,0 +1,48 @@
+name: Refresh LinkedIn posts
+
+on:
+  schedule:
+    # Sundays 05:00 UTC (08:00 Israel summer time)
+    - cron: "0 5 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linkedin-posts
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch latest posts from Apify
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+        run: node scripts/fetch-linkedin-posts.mjs
+
+      - name: Commit if changed
+        id: commit
+        run: |
+          if git diff --quiet -- data/linkedin-posts.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add data/linkedin-posts.json
+          git commit -m "chore: refresh LinkedIn posts"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Purge jsDelivr cache
+        if: steps.commit.outputs.changed == 'true'
+        run: curl -fsS "https://purge.jsdelivr.net/gh/Hanita-y/octaloom-fonts@main/data/linkedin-posts.json"
