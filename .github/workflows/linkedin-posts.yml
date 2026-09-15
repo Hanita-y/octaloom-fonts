@@ -43,6 +43,3 @@ jobs:
           git push
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Purge jsDelivr cache
-        if: steps.commit.outputs.changed == 'true'
-        run: curl -fsS "https://purge.jsdelivr.net/gh/Hanita-y/octaloom-fonts@main/data/linkedin-posts.json"
