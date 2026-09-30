@@ -2,12 +2,14 @@
 // data/linkedin-posts.json for the octaloom.com homepage feed.
 // Runs in GitHub Actions (Node 20+). Requires APIFY_TOKEN.
 
-import { readFile, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 
 const PROFILE_URL = "https://www.linkedin.com/in/hanita-yudovski/"
 const PROFILE_ID = "hanita-yudovski"
 const ACTOR = "harvestapi~linkedin-profile-posts"
 const OUTPUT = new URL("../data/linkedin-posts.json", import.meta.url)
+const IMG_DIR = new URL("../data/li-img/", import.meta.url)
+const TEXT_MAX = 700
 const POST_COUNT = 3
 
 export function pickPosts(items, profileId = PROFILE_ID, count = POST_COUNT) {
@@ -23,7 +25,52 @@ export function pickPosts(items, profileId = PROFILE_ID, count = POST_COUNT) {
             url: item.linkedinUrl,
             postedAt: item.postedAt?.date ?? null,
             embed: `https://www.linkedin.com/embed/feed/update/urn:li:activity:${item.id}`,
+            // Card fields for the homepage design (no iframe needed)
+            text: String(item.content ?? "").slice(0, TEXT_MAX),
+            likes: Number(item.engagement?.likes ?? 0),
+            comments: Number(item.engagement?.comments ?? 0),
+            shares: Number(item.engagement?.shares ?? 0),
+            reactions: (item.engagement?.reactions ?? [])
+                .filter((r) => r && r.type && r.count > 0)
+                .sort((a, b) => b.count - a.count)
+                .slice(0, 3)
+                .map((r) => r.type),
+            imageSrc: firstImageUrl(item),
         }))
+}
+
+// LinkedIn CDN image URLs expire, so the first image is copied into the repo
+function firstImageUrl(item) {
+    const img = (item.postImages ?? [])[0]
+    const fromImages = typeof img === "string" ? img : img?.url
+    const fromDocument = item.document?.coverPages?.[0]?.imageUrls?.[0]
+    const url = fromImages || fromDocument || null
+    return typeof url === "string" && url.startsWith("https://") ? url : null
+}
+
+async function saveImages(posts) {
+    await mkdir(IMG_DIR, { recursive: true })
+    const keep = new Set()
+    for (const post of posts) {
+        const src = post.imageSrc
+        delete post.imageSrc
+        post.image = null
+        if (!src) continue
+        try {
+            const res = await fetch(src)
+            const type = res.headers.get("content-type") ?? ""
+            if (!res.ok || !type.startsWith("image/")) continue
+            const name = `${post.id}.${type.includes("png") ? "png" : "jpg"}`
+            await writeFile(new URL(name, IMG_DIR), Buffer.from(await res.arrayBuffer()))
+            post.image = `data/li-img/${name}`
+            keep.add(name)
+        } catch {
+            // the card renders without an image
+        }
+    }
+    for (const name of await readdir(IMG_DIR)) {
+        if (!keep.has(name)) await rm(new URL(name, IMG_DIR))
+    }
 }
 
 async function runActor(token) {
@@ -64,12 +111,12 @@ async function main() {
         throw new Error(`Expected ${POST_COUNT} posts, got ${posts.length}. Keeping the existing file.`)
     }
 
+    await saveImages(posts)
+
+    // Counts change between runs, so compare the whole payload (minus the timestamp)
     const previous = JSON.parse(await readFile(OUTPUT, "utf8").catch(() => "{}"))
-    const sameIds =
-        JSON.stringify((previous.posts ?? []).map((p) => p.id)) ===
-        JSON.stringify(posts.map((p) => p.id))
-    if (sameIds) {
-        console.log("No new posts. File unchanged.")
+    if (JSON.stringify(previous.posts ?? []) === JSON.stringify(posts)) {
+        console.log("No changes. File unchanged.")
         return
     }
 
